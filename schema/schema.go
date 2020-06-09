@@ -15,6 +15,15 @@ import (
 // ErrUnsupportedDataType unsupported data type
 var ErrUnsupportedDataType = errors.New("unsupported data type")
 
+type CacheStore struct {
+	models map[reflect.Type]*Schema
+	mux    sync.RWMutex
+}
+
+func NewCacheStore() *CacheStore {
+	return &CacheStore{models: map[reflect.Type]*Schema{}}
+}
+
 type Schema struct {
 	Name                      string
 	ModelType                 reflect.Type
@@ -39,7 +48,7 @@ type Schema struct {
 	AfterFind                 bool
 	err                       error
 	namer                     Namer
-	cacheStore                *sync.Map
+	cacheStore                *CacheStore
 }
 
 func (schema Schema) String() string {
@@ -71,7 +80,7 @@ type Tabler interface {
 }
 
 // get data type from dialector
-func Parse(dest interface{}, cacheStore *sync.Map, namer Namer) (*Schema, error) {
+func Parse(dest interface{}, cacheStore *CacheStore, namer Namer) (*Schema, error) {
 	modelType := reflect.ValueOf(dest).Type()
 	for modelType.Kind() == reflect.Slice || modelType.Kind() == reflect.Ptr {
 		modelType = modelType.Elem()
@@ -84,9 +93,12 @@ func Parse(dest interface{}, cacheStore *sync.Map, namer Namer) (*Schema, error)
 		return nil, fmt.Errorf("%w: %v.%v", ErrUnsupportedDataType, modelType.PkgPath(), modelType.Name())
 	}
 
-	if v, ok := cacheStore.Load(modelType); ok {
-		return v.(*Schema), nil
+	cacheStore.mux.RLock()
+	if v, ok := cacheStore.models[modelType]; ok {
+		cacheStore.mux.RUnlock()
+		return v, nil
 	}
+	cacheStore.mux.RUnlock()
 
 	modelValue := reflect.New(modelType)
 	tableName := namer.TableName(modelType.Name())
@@ -108,7 +120,9 @@ func Parse(dest interface{}, cacheStore *sync.Map, namer Namer) (*Schema, error)
 	defer func() {
 		if schema.err != nil {
 			logger.Default.Error(context.Background(), schema.err.Error())
-			cacheStore.Delete(modelType)
+			cacheStore.mux.Lock()
+			delete(cacheStore.models, modelType)
+			cacheStore.mux.Unlock()
 		}
 	}()
 
@@ -203,13 +217,15 @@ func Parse(dest interface{}, cacheStore *sync.Map, namer Namer) (*Schema, error)
 		}
 	}
 
-	cacheStore.Store(modelType, schema)
+	cacheStore.mux.Lock()
+	cacheStore.models[modelType] = schema
+	cacheStore.mux.Unlock()
 
 	// parse relations for unidentified fields
 	for _, field := range schema.Fields {
 		if field.DataType == "" && field.Creatable {
 			if schema.parseRelation(field); schema.err != nil {
-				return schema, schema.err
+				break
 			}
 		}
 	}

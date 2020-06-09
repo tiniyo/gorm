@@ -1,7 +1,6 @@
 package schema_test
 
 import (
-	"sync"
 	"testing"
 
 	"gorm.io/gorm"
@@ -9,7 +8,7 @@ import (
 )
 
 func checkStructRelation(t *testing.T, data interface{}, relations ...Relation) {
-	if s, err := schema.Parse(data, &sync.Map{}, schema.NamingStrategy{}); err != nil {
+	if s, err := schema.Parse(data, schema.NewCacheStore(), schema.NamingStrategy{}); err != nil {
 		t.Errorf("Failed to parse schema")
 	} else {
 		for _, rel := range relations {

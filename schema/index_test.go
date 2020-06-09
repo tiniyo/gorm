@@ -2,7 +2,6 @@ package schema_test
 
 import (
 	"reflect"
-	"sync"
 	"testing"
 
 	"gorm.io/gorm/schema"
@@ -21,7 +20,7 @@ type UserIndex struct {
 }
 
 func TestParseIndex(t *testing.T) {
-	user, err := schema.Parse(&UserIndex{}, &sync.Map{}, schema.NamingStrategy{})
+	user, err := schema.Parse(&UserIndex{}, schema.NewCacheStore(), schema.NamingStrategy{})
 	if err != nil {
 		t.Fatalf("failed to parse user index, got error %v", err)
 	}

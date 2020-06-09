@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jinzhu/now"
@@ -291,7 +290,7 @@ func (schema *Schema) ParseField(fieldStruct reflect.StructField) *Field {
 		field.Creatable = false
 		field.Updatable = false
 		field.Readable = false
-		if field.EmbeddedSchema, err = Parse(fieldValue.Interface(), &sync.Map{}, schema.namer); err != nil {
+		if field.EmbeddedSchema, err = Parse(fieldValue.Interface(), NewCacheStore(), schema.namer); err != nil {
 			schema.err = err
 		}
 		for _, ef := range field.EmbeddedSchema.Fields {

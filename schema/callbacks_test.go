@@ -2,7 +2,6 @@ package schema_test
 
 import (
 	"reflect"
-	"sync"
 	"testing"
 
 	"gorm.io/gorm"
@@ -21,7 +20,7 @@ func (UserWithCallback) AfterCreate(*gorm.DB) error {
 }
 
 func TestCallback(t *testing.T) {
-	user, err := schema.Parse(&UserWithCallback{}, &sync.Map{}, schema.NamingStrategy{})
+	user, err := schema.Parse(&UserWithCallback{}, schema.NewCacheStore(), schema.NamingStrategy{})
 	if err != nil {
 		t.Fatalf("failed to parse user with callback, got error %v", err)
 	}

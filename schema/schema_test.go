@@ -1,7 +1,6 @@
 package schema_test
 
 import (
-	"sync"
 	"testing"
 
 	"gorm.io/gorm/schema"
@@ -9,7 +8,7 @@ import (
 )
 
 func TestParseSchema(t *testing.T) {
-	user, err := schema.Parse(&tests.User{}, &sync.Map{}, schema.NamingStrategy{})
+	user, err := schema.Parse(&tests.User{}, schema.NewCacheStore(), schema.NamingStrategy{})
 	if err != nil {
 		t.Fatalf("failed to parse user, got error %v", err)
 	}
@@ -18,7 +17,7 @@ func TestParseSchema(t *testing.T) {
 }
 
 func TestParseSchemaWithPointerFields(t *testing.T) {
-	user, err := schema.Parse(&User{}, &sync.Map{}, schema.NamingStrategy{})
+	user, err := schema.Parse(&User{}, schema.NewCacheStore(), schema.NamingStrategy{})
 	if err != nil {
 		t.Fatalf("failed to parse pointer user, got error %v", err)
 	}
@@ -115,7 +114,7 @@ func checkUserSchema(t *testing.T, user *schema.Schema) {
 }
 
 func TestParseSchemaWithAdvancedDataType(t *testing.T) {
-	user, err := schema.Parse(&AdvancedDataTypeUser{}, &sync.Map{}, schema.NamingStrategy{})
+	user, err := schema.Parse(&AdvancedDataTypeUser{}, schema.NewCacheStore(), schema.NamingStrategy{})
 	if err != nil {
 		t.Fatalf("failed to parse pointer user, got error %v", err)
 	}
@@ -151,7 +150,7 @@ func (CustomizeTable) TableName() string {
 }
 
 func TestCustomizeTableName(t *testing.T) {
-	customize, err := schema.Parse(&CustomizeTable{}, &sync.Map{}, schema.NamingStrategy{})
+	customize, err := schema.Parse(&CustomizeTable{}, schema.NewCacheStore(), schema.NamingStrategy{})
 	if err != nil {
 		t.Fatalf("failed to parse pointer user, got error %v", err)
 	}

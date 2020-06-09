@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"sync"
 	"time"
 
 	"gorm.io/gorm/clause"
@@ -38,7 +37,7 @@ type Config struct {
 	Dialector
 
 	callbacks  *callbacks
-	cacheStore *sync.Map
+	cacheStore *schema.CacheStore
 }
 
 // DB GORM DB definition
@@ -83,7 +82,7 @@ func Open(dialector Dialector, config *Config) (db *DB, err error) {
 	}
 
 	if config.cacheStore == nil {
-		config.cacheStore = &sync.Map{}
+		config.cacheStore = schema.NewCacheStore()
 	}
 
 	db = &DB{Config: config, clone: 1}
