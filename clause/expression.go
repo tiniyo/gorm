@@ -3,6 +3,7 @@ package clause
 import (
 	"database/sql"
 	"database/sql/driver"
+	"go/ast"
 	"reflect"
 )
 
@@ -18,8 +19,9 @@ type NegationExpressionBuilder interface {
 
 // Expr raw expression
 type Expr struct {
-	SQL  string
-	Vars []interface{}
+	SQL                string
+	Vars               []interface{}
+	WithoutParentheses bool
 }
 
 // Build build raw expression
@@ -30,18 +32,22 @@ func (expr Expr) Build(builder Builder) {
 	)
 
 	for _, v := range []byte(expr.SQL) {
-		if v == '?' {
-			if afterParenthesis {
+		if v == '?' && len(expr.Vars) > idx {
+			if afterParenthesis || expr.WithoutParentheses {
 				if _, ok := expr.Vars[idx].(driver.Valuer); ok {
 					builder.AddVar(builder, expr.Vars[idx])
 				} else {
 					switch rv := reflect.ValueOf(expr.Vars[idx]); rv.Kind() {
 					case reflect.Slice, reflect.Array:
-						for i := 0; i < rv.Len(); i++ {
-							if i > 0 {
-								builder.WriteByte(',')
+						if rv.Len() == 0 {
+							builder.AddVar(builder, nil)
+						} else {
+							for i := 0; i < rv.Len(); i++ {
+								if i > 0 {
+									builder.WriteByte(',')
+								}
+								builder.AddVar(builder, rv.Index(i).Interface())
 							}
-							builder.AddVar(builder, rv.Index(i).Interface())
 						}
 					default:
 						builder.AddVar(builder, expr.Vars[idx])
@@ -85,6 +91,26 @@ func (expr NamedExpr) Build(builder Builder) {
 			for k, v := range value {
 				namedMap[k] = v
 			}
+		default:
+			var appendFieldsToMap func(reflect.Value)
+			appendFieldsToMap = func(reflectValue reflect.Value) {
+				reflectValue = reflect.Indirect(reflectValue)
+				switch reflectValue.Kind() {
+				case reflect.Struct:
+					modelType := reflectValue.Type()
+					for i := 0; i < modelType.NumField(); i++ {
+						if fieldStruct := modelType.Field(i); ast.IsExported(fieldStruct.Name) {
+							namedMap[fieldStruct.Name] = reflectValue.Field(i).Interface()
+
+							if fieldStruct.Anonymous {
+								appendFieldsToMap(reflectValue.Field(i))
+							}
+						}
+					}
+				}
+			}
+
+			appendFieldsToMap(reflect.ValueOf(value))
 		}
 	}
 
@@ -94,7 +120,7 @@ func (expr NamedExpr) Build(builder Builder) {
 		if v == '@' && !inName {
 			inName = true
 			name = []byte{}
-		} else if v == ' ' || v == ',' || v == ')' || v == '"' || v == '\'' || v == '`' {
+		} else if v == ' ' || v == ',' || v == ')' || v == '"' || v == '\'' || v == '`' || v == '\n' {
 			if inName {
 				if nv, ok := namedMap[string(name)]; ok {
 					builder.AddVar(builder, nv)
@@ -106,7 +132,7 @@ func (expr NamedExpr) Build(builder Builder) {
 			}
 
 			builder.WriteByte(v)
-		} else if v == '?' {
+		} else if v == '?' && len(expr.Vars) > idx {
 			builder.AddVar(builder, expr.Vars[idx])
 			idx++
 		} else if inName {
@@ -134,8 +160,13 @@ func (in IN) Build(builder Builder) {
 	case 0:
 		builder.WriteString(" IN (NULL)")
 	case 1:
-		builder.WriteString(" = ")
-		builder.AddVar(builder, in.Values...)
+		if _, ok := in.Values[0].([]interface{}); !ok {
+			builder.WriteString(" = ")
+			builder.AddVar(builder, in.Values[0])
+			break
+		}
+
+		fallthrough
 	default:
 		builder.WriteString(" IN (")
 		builder.AddVar(builder, in.Values...)
@@ -147,9 +178,14 @@ func (in IN) NegationBuild(builder Builder) {
 	switch len(in.Values) {
 	case 0:
 	case 1:
-		builder.WriteQuoted(in.Column)
-		builder.WriteString(" <> ")
-		builder.AddVar(builder, in.Values...)
+		if _, ok := in.Values[0].([]interface{}); !ok {
+			builder.WriteQuoted(in.Column)
+			builder.WriteString(" <> ")
+			builder.AddVar(builder, in.Values[0])
+			break
+		}
+
+		fallthrough
 	default:
 		builder.WriteQuoted(in.Column)
 		builder.WriteString(" NOT IN (")
@@ -167,7 +203,7 @@ type Eq struct {
 func (eq Eq) Build(builder Builder) {
 	builder.WriteQuoted(eq.Column)
 
-	if eq.Value == nil {
+	if eqNil(eq.Value) {
 		builder.WriteString(" IS NULL")
 	} else {
 		builder.WriteString(" = ")
@@ -176,7 +212,7 @@ func (eq Eq) Build(builder Builder) {
 }
 
 func (eq Eq) NegationBuild(builder Builder) {
-	Neq{eq.Column, eq.Value}.Build(builder)
+	Neq(eq).Build(builder)
 }
 
 // Neq not equal to for where
@@ -185,7 +221,7 @@ type Neq Eq
 func (neq Neq) Build(builder Builder) {
 	builder.WriteQuoted(neq.Column)
 
-	if neq.Value == nil {
+	if eqNil(neq.Value) {
 		builder.WriteString(" IS NOT NULL")
 	} else {
 		builder.WriteString(" <> ")
@@ -194,7 +230,7 @@ func (neq Neq) Build(builder Builder) {
 }
 
 func (neq Neq) NegationBuild(builder Builder) {
-	Eq{neq.Column, neq.Value}.Build(builder)
+	Eq(neq).Build(builder)
 }
 
 // Gt greater than for where
@@ -207,7 +243,7 @@ func (gt Gt) Build(builder Builder) {
 }
 
 func (gt Gt) NegationBuild(builder Builder) {
-	Lte{gt.Column, gt.Value}.Build(builder)
+	Lte(gt).Build(builder)
 }
 
 // Gte greater than or equal to for where
@@ -220,7 +256,7 @@ func (gte Gte) Build(builder Builder) {
 }
 
 func (gte Gte) NegationBuild(builder Builder) {
-	Lt{gte.Column, gte.Value}.Build(builder)
+	Lt(gte).Build(builder)
 }
 
 // Lt less than for where
@@ -233,7 +269,7 @@ func (lt Lt) Build(builder Builder) {
 }
 
 func (lt Lt) NegationBuild(builder Builder) {
-	Gte{lt.Column, lt.Value}.Build(builder)
+	Gte(lt).Build(builder)
 }
 
 // Lte less than or equal to for where
@@ -246,7 +282,7 @@ func (lte Lte) Build(builder Builder) {
 }
 
 func (lte Lte) NegationBuild(builder Builder) {
-	Gt{lte.Column, lte.Value}.Build(builder)
+	Gt(lte).Build(builder)
 }
 
 // Like whether string matches regular expression
@@ -262,4 +298,17 @@ func (like Like) NegationBuild(builder Builder) {
 	builder.WriteQuoted(like.Column)
 	builder.WriteString(" NOT LIKE ")
 	builder.AddVar(builder, like.Value)
+}
+
+func eqNil(value interface{}) bool {
+	if valuer, ok := value.(driver.Valuer); ok {
+		value, _ = valuer.Value()
+	}
+
+	return value == nil || eqNilReflect(value)
+}
+
+func eqNilReflect(value interface{}) bool {
+	reflectValue := reflect.ValueOf(value)
+	return reflectValue.Kind() == reflect.Ptr && reflectValue.IsNil()
 }

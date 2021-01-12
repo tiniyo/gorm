@@ -31,6 +31,7 @@ func RegisterDefaultCallbacks(db *gorm.DB, config *Config) {
 	deleteCallback := db.Callback().Delete()
 	deleteCallback.Match(enableTransaction).Register("gorm:begin_transaction", BeginTransaction)
 	deleteCallback.Register("gorm:before_delete", BeforeDelete)
+	deleteCallback.Register("gorm:delete_before_associations", DeleteBeforeAssociations)
 	deleteCallback.Register("gorm:delete", Delete)
 	deleteCallback.Register("gorm:after_delete", AfterDelete)
 	deleteCallback.Match(enableTransaction).Register("gorm:commit_or_rollback_transaction", CommitOrRollbackTransaction)
@@ -45,6 +46,6 @@ func RegisterDefaultCallbacks(db *gorm.DB, config *Config) {
 	updateCallback.Register("gorm:after_update", AfterUpdate)
 	updateCallback.Match(enableTransaction).Register("gorm:commit_or_rollback_transaction", CommitOrRollbackTransaction)
 
-	db.Callback().Row().Register("gorm:raw", RowQuery)
+	db.Callback().Row().Register("gorm:row", RowQuery)
 	db.Callback().Raw().Register("gorm:raw", RawExec)
 }

@@ -1,6 +1,8 @@
 package tests_test
 
 import (
+	"errors"
+	"regexp"
 	"testing"
 	"time"
 
@@ -36,6 +38,103 @@ func TestCreate(t *testing.T) {
 		t.Fatalf("errors happened when query: %v", err)
 	} else {
 		CheckUser(t, newUser, user)
+	}
+}
+
+func TestCreateInBatches(t *testing.T) {
+	users := []User{
+		*GetUser("create_in_batches_1", Config{Account: true, Pets: 2, Toys: 3, Company: true, Manager: true, Team: 0, Languages: 1, Friends: 1}),
+		*GetUser("create_in_batches_2", Config{Account: false, Pets: 2, Toys: 4, Company: false, Manager: false, Team: 1, Languages: 3, Friends: 5}),
+		*GetUser("create_in_batches_3", Config{Account: true, Pets: 0, Toys: 3, Company: true, Manager: false, Team: 4, Languages: 0, Friends: 1}),
+		*GetUser("create_in_batches_4", Config{Account: true, Pets: 3, Toys: 0, Company: false, Manager: true, Team: 0, Languages: 3, Friends: 0}),
+		*GetUser("create_in_batches_5", Config{Account: false, Pets: 0, Toys: 3, Company: true, Manager: false, Team: 1, Languages: 3, Friends: 1}),
+		*GetUser("create_in_batches_6", Config{Account: true, Pets: 4, Toys: 3, Company: false, Manager: true, Team: 1, Languages: 3, Friends: 0}),
+	}
+
+	result := DB.CreateInBatches(&users, 2)
+	if result.RowsAffected != int64(len(users)) {
+		t.Errorf("affected rows should be %v, but got %v", len(users), result.RowsAffected)
+	}
+
+	for _, user := range users {
+		if user.ID == 0 {
+			t.Fatalf("failed to fill user's ID, got %v", user.ID)
+		} else {
+			var newUser User
+			if err := DB.Where("id = ?", user.ID).Preload(clause.Associations).First(&newUser).Error; err != nil {
+				t.Fatalf("errors happened when query: %v", err)
+			} else {
+				CheckUser(t, newUser, user)
+			}
+		}
+	}
+}
+
+func TestCreateInBatchesWithDefaultSize(t *testing.T) {
+	users := []User{
+		*GetUser("create_with_default_batch_size_1", Config{Account: true, Pets: 2, Toys: 3, Company: true, Manager: true, Team: 0, Languages: 1, Friends: 1}),
+		*GetUser("create_with_default_batch_sizs_2", Config{Account: false, Pets: 2, Toys: 4, Company: false, Manager: false, Team: 1, Languages: 3, Friends: 5}),
+		*GetUser("create_with_default_batch_sizs_3", Config{Account: true, Pets: 0, Toys: 3, Company: true, Manager: false, Team: 4, Languages: 0, Friends: 1}),
+		*GetUser("create_with_default_batch_sizs_4", Config{Account: true, Pets: 3, Toys: 0, Company: false, Manager: true, Team: 0, Languages: 3, Friends: 0}),
+		*GetUser("create_with_default_batch_sizs_5", Config{Account: false, Pets: 0, Toys: 3, Company: true, Manager: false, Team: 1, Languages: 3, Friends: 1}),
+		*GetUser("create_with_default_batch_sizs_6", Config{Account: true, Pets: 4, Toys: 3, Company: false, Manager: true, Team: 1, Languages: 3, Friends: 0}),
+	}
+
+	result := DB.Session(&gorm.Session{CreateBatchSize: 2}).Create(&users)
+	if result.RowsAffected != int64(len(users)) {
+		t.Errorf("affected rows should be %v, but got %v", len(users), result.RowsAffected)
+	}
+
+	for _, user := range users {
+		if user.ID == 0 {
+			t.Fatalf("failed to fill user's ID, got %v", user.ID)
+		} else {
+			var newUser User
+			if err := DB.Where("id = ?", user.ID).Preload(clause.Associations).First(&newUser).Error; err != nil {
+				t.Fatalf("errors happened when query: %v", err)
+			} else {
+				CheckUser(t, newUser, user)
+			}
+		}
+	}
+}
+
+func TestCreateFromMap(t *testing.T) {
+	if err := DB.Model(&User{}).Create(map[string]interface{}{"Name": "create_from_map", "Age": 18}).Error; err != nil {
+		t.Fatalf("failed to create data from map, got error: %v", err)
+	}
+
+	var result User
+	if err := DB.Where("name = ?", "create_from_map").First(&result).Error; err != nil || result.Age != 18 {
+		t.Fatalf("failed to create from map, got error %v", err)
+	}
+
+	if err := DB.Model(&User{}).Create(map[string]interface{}{"name": "create_from_map_1", "age": 18}).Error; err != nil {
+		t.Fatalf("failed to create data from map, got error: %v", err)
+	}
+
+	var result1 User
+	if err := DB.Where("name = ?", "create_from_map_1").First(&result1).Error; err != nil || result1.Age != 18 {
+		t.Fatalf("failed to create from map, got error %v", err)
+	}
+
+	datas := []map[string]interface{}{
+		{"Name": "create_from_map_2", "Age": 19},
+		{"name": "create_from_map_3", "Age": 20},
+	}
+
+	if err := DB.Model(&User{}).Create(datas).Error; err != nil {
+		t.Fatalf("failed to create data from slice of map, got error: %v", err)
+	}
+
+	var result2 User
+	if err := DB.Where("name = ?", "create_from_map_2").First(&result2).Error; err != nil || result2.Age != 19 {
+		t.Fatalf("failed to query data after create from slice of map, got error %v", err)
+	}
+
+	var result3 User
+	if err := DB.Where("name = ?", "create_from_map_3").First(&result3).Error; err != nil || result3.Age != 20 {
+		t.Fatalf("failed to query data after create from slice of map, got error %v", err)
 	}
 }
 
@@ -248,6 +347,30 @@ func TestCreateEmptyStruct(t *testing.T) {
 	}
 }
 
+func TestCreateEmptySlice(t *testing.T) {
+	var data = []User{}
+	if err := DB.Create(&data).Error; err != gorm.ErrEmptySlice {
+		t.Errorf("no data should be created, got %v", err)
+	}
+
+	var sliceMap = []map[string]interface{}{}
+	if err := DB.Model(&User{}).Create(&sliceMap).Error; err != gorm.ErrEmptySlice {
+		t.Errorf("no data should be created, got %v", err)
+	}
+}
+
+func TestCreateInvalidSlice(t *testing.T) {
+	users := []*User{
+		GetUser("invalid_slice_1", Config{}),
+		GetUser("invalid_slice_2", Config{}),
+		nil,
+	}
+
+	if err := DB.Create(&users).Error; !errors.Is(err, gorm.ErrInvalidData) {
+		t.Errorf("should returns error invalid data when creating from slice that contains invalid data")
+	}
+}
+
 func TestCreateWithExistingTimestamp(t *testing.T) {
 	user := User{Name: "CreateUserExistingTimestamp"}
 	curTime := now.MustParse("2016-01-01")
@@ -351,4 +474,46 @@ func TestOmitWithCreate(t *testing.T) {
 	user2.Friends = nil
 
 	CheckUser(t, result2, user2)
+}
+
+func TestFirstOrCreateWithPrimaryKey(t *testing.T) {
+	company := Company{ID: 100, Name: "company100_with_primarykey"}
+	DB.FirstOrCreate(&company)
+
+	if company.ID != 100 {
+		t.Errorf("invalid primary key after creating, got %v", company.ID)
+	}
+
+	companies := []Company{
+		{ID: 101, Name: "company101_with_primarykey"},
+		{ID: 102, Name: "company102_with_primarykey"},
+	}
+	DB.Create(&companies)
+
+	if companies[0].ID != 101 || companies[1].ID != 102 {
+		t.Errorf("invalid primary key after creating, got %v, %v", companies[0].ID, companies[1].ID)
+	}
+}
+
+func TestCreateFromSubQuery(t *testing.T) {
+	user := User{Name: "jinzhu"}
+
+	DB.Create(&user)
+
+	subQuery := DB.Table("users").Where("name=?", user.Name).Select("id")
+
+	result := DB.Session(&gorm.Session{DryRun: true}).Model(&Pet{}).Create([]map[string]interface{}{
+		{
+			"name":    "cat",
+			"user_id": gorm.Expr("(?)", DB.Table("(?) as tmp", subQuery).Select("@uid:=id")),
+		},
+		{
+			"name":    "dog",
+			"user_id": gorm.Expr("@uid"),
+		},
+	})
+
+	if !regexp.MustCompile(`INSERT INTO .pets. \(.name.,.user_id.\) .*VALUES \(.+,\(SELECT @uid:=id FROM \(SELECT id FROM .users. WHERE name=.+\) as tmp\)\),\(.+,@uid\)`).MatchString(result.Statement.SQL.String()) {
+		t.Errorf("invalid insert SQL, got %v", result.Statement.SQL.String())
+	}
 }

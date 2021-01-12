@@ -9,6 +9,8 @@ import (
 	"gorm.io/gorm/utils"
 )
 
+var embeddedCacheKey = "embedded_cache_store"
+
 func ParseTagSetting(str string, sep string) map[string]string {
 	settings := map[string]string{}
 	names := strings.Split(str, sep)
@@ -49,14 +51,17 @@ func toColumns(val string) (results []string) {
 	return
 }
 
-func removeSettingFromTag(tag reflect.StructTag, name string) reflect.StructTag {
-	return reflect.StructTag(regexp.MustCompile(`(?i)(gorm:.*?)(`+name+`:.*?)(;|("))`).ReplaceAllString(string(tag), "${1}${4}"))
+func removeSettingFromTag(tag reflect.StructTag, names ...string) reflect.StructTag {
+	for _, name := range names {
+		tag = reflect.StructTag(regexp.MustCompile(`(?i)(gorm:.*?)(`+name+`(:.*?)?)(;|("))`).ReplaceAllString(string(tag), "${1}${5}"))
+	}
+	return tag
 }
 
 // GetRelationsValues get relations's values from a reflect value
 func GetRelationsValues(reflectValue reflect.Value, rels []*Relationship) (reflectResults reflect.Value) {
 	for _, rel := range rels {
-		reflectResults = reflect.MakeSlice(reflect.SliceOf(reflect.PtrTo(rel.FieldSchema.ModelType)), 0, 0)
+		reflectResults = reflect.MakeSlice(reflect.SliceOf(reflect.PtrTo(rel.FieldSchema.ModelType)), 0, 1)
 
 		appendToResults := func(value reflect.Value) {
 			if _, isZero := rel.Field.ValueOf(value); !isZero {
@@ -184,4 +189,9 @@ func ToQueryValues(table string, foreignKeys []string, foreignValues [][]interfa
 		}
 		return columns, queryValues
 	}
+}
+
+type embeddedNamer struct {
+	Table string
+	Namer
 }

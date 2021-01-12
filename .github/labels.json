@@ -10,6 +10,16 @@
       "colour": "#EDEDED",
       "description": "general questions"
     },
+    "feature": {
+      "name": "type:feature_request",
+      "colour": "#43952A",
+      "description": "feature request"
+    },
+    "invalid_question": {
+      "name": "type:invalid question",
+      "colour": "#CF2E1F",
+      "description": "invalid question (not related to GORM or described in document or not enough information provided)"
+    },
     "with_playground": {
       "name": "type:with reproduction steps",
       "colour": "#00ff00",
@@ -77,8 +87,21 @@
         }
       ]
     },
+    "feature": {
+      "requires": 1,
+      "conditions": [
+        {
+          "type": "titleMatches",
+          "pattern": "/feature/i"
+        },
+        {
+          "type": "descriptionMatches",
+          "pattern": "/Describe the feature/i"
+        }
+      ]
+    },
     "without_playground": {
-      "requires": 5,
+      "requires": 6,
       "conditions": [
         {
           "type": "descriptionMatches",
@@ -91,6 +114,10 @@
         {
           "type": "descriptionMatches",
           "pattern": "/^((?!question).)*$/is"
+        },
+        {
+          "type": "descriptionMatches",
+          "pattern": "/^((?!Describe the feature).)*$/is"
         },
         {
           "type": "titleMatches",

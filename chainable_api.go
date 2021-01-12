@@ -2,6 +2,7 @@ package gorm
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"gorm.io/gorm/clause"
@@ -40,21 +41,35 @@ func (db *DB) Clauses(conds ...clause.Expression) (tx *DB) {
 	return
 }
 
+var tableRegexp = regexp.MustCompile(`(?i).+? AS (\w+)\s*(?:$|,)`)
+
 // Table specify the table you would like to run db operations
-func (db *DB) Table(name string) (tx *DB) {
+func (db *DB) Table(name string, args ...interface{}) (tx *DB) {
 	tx = db.getInstance()
+	if strings.Contains(name, " ") || strings.Contains(name, "`") || len(args) > 0 {
+		tx.Statement.TableExpr = &clause.Expr{SQL: name, Vars: args}
+		if results := tableRegexp.FindStringSubmatch(name); len(results) == 2 {
+			tx.Statement.Table = results[1]
+			return
+		}
+	} else if tables := strings.Split(name, "."); len(tables) == 2 {
+		tx.Statement.TableExpr = &clause.Expr{SQL: tx.Statement.Quote(name)}
+		tx.Statement.Table = tables[1]
+		return
+	}
+
 	tx.Statement.Table = name
 	return
 }
 
 // Distinct specify distinct fields that you want querying
 func (db *DB) Distinct(args ...interface{}) (tx *DB) {
-	tx = db
+	tx = db.getInstance()
+	tx.Statement.Distinct = true
 	if len(args) > 0 {
 		tx = tx.Select(args[0], args[1:]...)
 	}
-	tx.Statement.Distinct = true
-	return tx
+	return
 }
 
 // Select specify fields that you want when querying, creating, updating
@@ -76,12 +91,15 @@ func (db *DB) Select(query interface{}, args ...interface{}) (tx *DB) {
 				return
 			}
 		}
+		delete(tx.Statement.Clauses, "SELECT")
 	case string:
-		fields := strings.FieldsFunc(v, utils.IsChar)
-
-		// normal field names
-		if len(fields) == 1 || (len(fields) == 3 && strings.ToUpper(fields[1]) == "AS") {
-			tx.Statement.Selects = fields
+		if strings.Count(v, "?") >= len(args) && len(args) > 0 {
+			tx.Statement.AddClause(clause.Select{
+				Distinct:   db.Statement.Distinct,
+				Expression: clause.Expr{SQL: v, Vars: args},
+			})
+		} else {
+			tx.Statement.Selects = []string{v}
 
 			for _, arg := range args {
 				switch arg := arg.(type) {
@@ -91,15 +109,14 @@ func (db *DB) Select(query interface{}, args ...interface{}) (tx *DB) {
 					tx.Statement.Selects = append(tx.Statement.Selects, arg...)
 				default:
 					tx.Statement.AddClause(clause.Select{
+						Distinct:   db.Statement.Distinct,
 						Expression: clause.Expr{SQL: v, Vars: args},
 					})
 					return
 				}
 			}
-		} else {
-			tx.Statement.AddClause(clause.Select{
-				Expression: clause.Expr{SQL: v, Vars: args},
-			})
+
+			delete(tx.Statement.Clauses, "SELECT")
 		}
 	default:
 		tx.AddError(fmt.Errorf("unsupported select args %v %v", query, args))
@@ -113,7 +130,7 @@ func (db *DB) Omit(columns ...string) (tx *DB) {
 	tx = db.getInstance()
 
 	if len(columns) == 1 && strings.ContainsRune(columns[0], ',') {
-		tx.Statement.Omits = strings.FieldsFunc(columns[0], utils.IsChar)
+		tx.Statement.Omits = strings.FieldsFunc(columns[0], utils.IsValidDBNameChar)
 	} else {
 		tx.Statement.Omits = columns
 	}
@@ -152,10 +169,7 @@ func (db *DB) Or(query interface{}, args ...interface{}) (tx *DB) {
 //     db.Joins("JOIN emails ON emails.user_id = users.id AND emails.email = ?", "jinzhu@example.org").Find(&user)
 func (db *DB) Joins(query string, args ...interface{}) (tx *DB) {
 	tx = db.getInstance()
-	if tx.Statement.Joins == nil {
-		tx.Statement.Joins = map[string][]interface{}{}
-	}
-	tx.Statement.Joins[query] = args
+	tx.Statement.Joins = append(tx.Statement.Joins, join{Name: query, Conds: args})
 	return
 }
 
@@ -163,7 +177,7 @@ func (db *DB) Joins(query string, args ...interface{}) (tx *DB) {
 func (db *DB) Group(name string) (tx *DB) {
 	tx = db.getInstance()
 
-	fields := strings.FieldsFunc(name, utils.IsChar)
+	fields := strings.FieldsFunc(name, utils.IsValidDBNameChar)
 	tx.Statement.AddClause(clause.GroupBy{
 		Columns: []clause.Column{{Name: name, Raw: len(fields) != 1}},
 	})
@@ -181,7 +195,7 @@ func (db *DB) Having(query interface{}, args ...interface{}) (tx *DB) {
 
 // Order specify order when retrieve records from database
 //     db.Order("name DESC")
-//     db.Order(gorm.Expr("name = ? DESC", "first")) // sql expression
+//     db.Order(clause.OrderByColumn{Column: clause.Column{Name: "name"}, Desc: true})
 func (db *DB) Order(value interface{}) (tx *DB) {
 	tx = db.getInstance()
 

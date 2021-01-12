@@ -1,6 +1,7 @@
 package tests_test
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -22,6 +23,22 @@ func TestRow(t *testing.T) {
 	}
 
 	if age != 10 {
+		t.Errorf("Scan with Row, age expects: %v, got %v", user2.Age, age)
+	}
+
+	table := "gorm.users"
+	if DB.Dialector.Name() != "mysql" {
+		table = "users" // other databases doesn't support select with `database.table`
+	}
+
+	DB.Table(table).Where(map[string]interface{}{"name": user2.Name}).Update("age", 20)
+
+	row = DB.Table(table+" as u").Where("u.name = ?", user2.Name).Select("age").Row()
+	if err := row.Scan(&age); err != nil {
+		t.Fatalf("Failed to scan age, got %v", err)
+	}
+
+	if age != 20 {
 		t.Errorf("Scan with Row, age expects: %v, got %v", user2.Age, age)
 	}
 }
@@ -170,5 +187,58 @@ func TestGroupConditions(t *testing.T) {
 
 	if !strings.HasSuffix(result, expects) {
 		t.Errorf("expects: %v, got %v", expects, result)
+	}
+}
+
+func TestCombineStringConditions(t *testing.T) {
+	dryRunDB := DB.Session(&gorm.Session{DryRun: true})
+	sql := dryRunDB.Where("a = ? or b = ?", "a", "b").Find(&User{}).Statement.SQL.String()
+	if !regexp.MustCompile(`WHERE \(a = .+ or b = .+\) AND .users.\..deleted_at. IS NULL`).MatchString(sql) {
+		t.Fatalf("invalid sql generated, got %v", sql)
+	}
+
+	sql = dryRunDB.Where("a = ? or b = ?", "a", "b").Or("c = ? and d = ?", "c", "d").Find(&User{}).Statement.SQL.String()
+	if !regexp.MustCompile(`WHERE \(\(a = .+ or b = .+\) OR \(c = .+ and d = .+\)\) AND .users.\..deleted_at. IS NULL`).MatchString(sql) {
+		t.Fatalf("invalid sql generated, got %v", sql)
+	}
+
+	sql = dryRunDB.Where("a = ? or b = ?", "a", "b").Or("c = ?", "c").Find(&User{}).Statement.SQL.String()
+	if !regexp.MustCompile(`WHERE \(\(a = .+ or b = .+\) OR c = .+\) AND .users.\..deleted_at. IS NULL`).MatchString(sql) {
+		t.Fatalf("invalid sql generated, got %v", sql)
+	}
+
+	sql = dryRunDB.Where("a = ? or b = ?", "a", "b").Or("c = ? and d = ?", "c", "d").Or("e = ? and f = ?", "e", "f").Find(&User{}).Statement.SQL.String()
+	if !regexp.MustCompile(`WHERE \(\(a = .+ or b = .+\) OR \(c = .+ and d = .+\) OR \(e = .+ and f = .+\)\) AND .users.\..deleted_at. IS NULL`).MatchString(sql) {
+		t.Fatalf("invalid sql generated, got %v", sql)
+	}
+
+	sql = dryRunDB.Where("a = ? or b = ?", "a", "b").Where("c = ? and d = ?", "c", "d").Not("e = ? and f = ?", "e", "f").Find(&User{}).Statement.SQL.String()
+	if !regexp.MustCompile(`WHERE \(a = .+ or b = .+\) AND \(c = .+ and d = .+\) AND NOT \(e = .+ and f = .+\) AND .users.\..deleted_at. IS NULL`).MatchString(sql) {
+		t.Fatalf("invalid sql generated, got %v", sql)
+	}
+
+	sql = dryRunDB.Where("a = ? or b = ?", "a", "b").Where("c = ?", "c").Not("e = ? and f = ?", "e", "f").Find(&User{}).Statement.SQL.String()
+	if !regexp.MustCompile(`WHERE \(a = .+ or b = .+\) AND c = .+ AND NOT \(e = .+ and f = .+\) AND .users.\..deleted_at. IS NULL`).MatchString(sql) {
+		t.Fatalf("invalid sql generated, got %v", sql)
+	}
+
+	sql = dryRunDB.Where("a = ? or b = ?", "a", "b").Where("c = ? and d = ?", "c", "d").Not("e = ?", "e").Find(&User{}).Statement.SQL.String()
+	if !regexp.MustCompile(`WHERE \(a = .+ or b = .+\) AND \(c = .+ and d = .+\) AND NOT e = .+ AND .users.\..deleted_at. IS NULL`).MatchString(sql) {
+		t.Fatalf("invalid sql generated, got %v", sql)
+	}
+
+	sql = dryRunDB.Where("a = ? or b = ?", "a", "b").Unscoped().Find(&User{}).Statement.SQL.String()
+	if !regexp.MustCompile(`WHERE a = .+ or b = .+$`).MatchString(sql) {
+		t.Fatalf("invalid sql generated, got %v", sql)
+	}
+
+	sql = dryRunDB.Or("a = ? or b = ?", "a", "b").Unscoped().Find(&User{}).Statement.SQL.String()
+	if !regexp.MustCompile(`WHERE a = .+ or b = .+$`).MatchString(sql) {
+		t.Fatalf("invalid sql generated, got %v", sql)
+	}
+
+	sql = dryRunDB.Not("a = ? or b = ?", "a", "b").Unscoped().Find(&User{}).Statement.SQL.String()
+	if !regexp.MustCompile(`WHERE NOT \(a = .+ or b = .+\)$`).MatchString(sql) {
+		t.Fatalf("invalid sql generated, got %v", sql)
 	}
 }

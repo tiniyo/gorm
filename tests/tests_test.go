@@ -21,7 +21,7 @@ var DB *gorm.DB
 func init() {
 	var err error
 	if DB, err = OpenTestConnection(); err != nil {
-		log.Printf("failed to connect database, got error %v\n", err)
+		log.Printf("failed to connect database, got error %v", err)
 		os.Exit(1)
 	} else {
 		sqlDB, err := DB.DB()
@@ -30,7 +30,7 @@ func init() {
 		}
 
 		if err != nil {
-			log.Printf("failed to connect database, got error %v\n", err)
+			log.Printf("failed to connect database, got error %v", err)
 		}
 
 		RunMigrations()
@@ -52,7 +52,7 @@ func OpenTestConnection() (db *gorm.DB, err error) {
 	case "postgres":
 		log.Println("testing postgres...")
 		if dbDSN == "" {
-			dbDSN = "user=gorm password=gorm DB.name=gorm host=localhost port=9920 sslmode=disable TimeZone=Asia/Shanghai"
+			dbDSN = "user=gorm password=gorm dbname=gorm host=localhost port=9920 sslmode=disable TimeZone=Asia/Shanghai"
 		}
 		db, err = gorm.Open(postgres.New(postgres.Config{
 			DSN:                  dbDSN,
@@ -64,6 +64,8 @@ func OpenTestConnection() (db *gorm.DB, err error) {
 		// USE gorm;
 		// CREATE USER gorm FROM LOGIN gorm;
 		// sp_changedbowner 'gorm';
+		// npm install -g sql-cli
+		// mssql -u gorm -p LoremIpsum86 -d gorm -o 9930
 		log.Println("testing sqlserver...")
 		if dbDSN == "" {
 			dbDSN = "sqlserver://gorm:LoremIpsum86@localhost:9930?database=gorm"

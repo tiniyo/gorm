@@ -2,9 +2,11 @@ package callbacks
 
 import (
 	"reflect"
+	"strings"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/schema"
 )
 
 func SaveBeforeAssociations(db *gorm.DB) {
@@ -21,7 +23,7 @@ func SaveBeforeAssociations(db *gorm.DB) {
 				for _, ref := range rel.References {
 					if !ref.OwnPrimaryKey {
 						pv, _ := ref.PrimaryKey.ValueOf(elem)
-						ref.ForeignKey.Set(obj, pv)
+						db.AddError(ref.ForeignKey.Set(obj, pv))
 
 						if dest, ok := db.Statement.Dest.(map[string]interface{}); ok {
 							dest[ref.ForeignKey.DBName] = pv
@@ -45,24 +47,27 @@ func SaveBeforeAssociations(db *gorm.DB) {
 					fieldType = reflect.PtrTo(fieldType)
 				}
 
-				elems := reflect.MakeSlice(reflect.SliceOf(fieldType), 0, 0)
+				elems := reflect.MakeSlice(reflect.SliceOf(fieldType), 0, 10)
 				for i := 0; i < db.Statement.ReflectValue.Len(); i++ {
 					obj := db.Statement.ReflectValue.Index(i)
-					if _, zero := rel.Field.ValueOf(obj); !zero { // check belongs to relation value
-						rv := rel.Field.ReflectValueOf(obj) // relation reflect value
-						objs = append(objs, obj)
-						if isPtr {
-							elems = reflect.Append(elems, rv)
-						} else {
-							elems = reflect.Append(elems, rv.Addr())
+
+					if reflect.Indirect(obj).Kind() == reflect.Struct {
+						if _, zero := rel.Field.ValueOf(obj); !zero { // check belongs to relation value
+							rv := rel.Field.ReflectValueOf(obj) // relation reflect value
+							objs = append(objs, obj)
+							if isPtr {
+								elems = reflect.Append(elems, rv)
+							} else {
+								elems = reflect.Append(elems, rv.Addr())
+							}
 						}
+					} else {
+						break
 					}
 				}
 
 				if elems.Len() > 0 {
-					if db.AddError(db.Session(&gorm.Session{}).Clauses(clause.OnConflict{
-						DoNothing: true,
-					}).Create(elems.Interface()).Error) == nil {
+					if saveAssociations(db, rel, elems.Interface(), selectColumns, restricted, nil) == nil {
 						for i := 0; i < elems.Len(); i++ {
 							setupReferences(objs[i], elems.Index(i))
 						}
@@ -75,9 +80,7 @@ func SaveBeforeAssociations(db *gorm.DB) {
 						rv = rv.Addr()
 					}
 
-					if db.AddError(db.Session(&gorm.Session{}).Clauses(clause.OnConflict{
-						DoNothing: true,
-					}).Create(rv.Interface()).Error) == nil {
+					if saveAssociations(db, rel, rv.Interface(), selectColumns, restricted, nil) == nil {
 						setupReferences(db.Statement.ReflectValue, rv)
 					}
 				}
@@ -107,27 +110,29 @@ func SaveAfterAssociations(db *gorm.DB) {
 					fieldType = reflect.PtrTo(fieldType)
 				}
 
-				elems := reflect.MakeSlice(reflect.SliceOf(fieldType), 0, 0)
+				elems := reflect.MakeSlice(reflect.SliceOf(fieldType), 0, 10)
 
 				for i := 0; i < db.Statement.ReflectValue.Len(); i++ {
 					obj := db.Statement.ReflectValue.Index(i)
 
-					if _, zero := rel.Field.ValueOf(obj); !zero {
-						rv := rel.Field.ReflectValueOf(obj)
-						if rv.Kind() != reflect.Ptr {
-							rv = rv.Addr()
-						}
-
-						for _, ref := range rel.References {
-							if ref.OwnPrimaryKey {
-								fv, _ := ref.PrimaryKey.ValueOf(obj)
-								ref.ForeignKey.Set(rv, fv)
-							} else if ref.PrimaryValue != "" {
-								ref.ForeignKey.Set(rv, ref.PrimaryValue)
+					if reflect.Indirect(obj).Kind() == reflect.Struct {
+						if _, zero := rel.Field.ValueOf(obj); !zero {
+							rv := rel.Field.ReflectValueOf(obj)
+							if rv.Kind() != reflect.Ptr {
+								rv = rv.Addr()
 							}
-						}
 
-						elems = reflect.Append(elems, rv)
+							for _, ref := range rel.References {
+								if ref.OwnPrimaryKey {
+									fv, _ := ref.PrimaryKey.ValueOf(obj)
+									db.AddError(ref.ForeignKey.Set(rv, fv))
+								} else if ref.PrimaryValue != "" {
+									db.AddError(ref.ForeignKey.Set(rv, ref.PrimaryValue))
+								}
+							}
+
+							elems = reflect.Append(elems, rv)
+						}
 					}
 				}
 
@@ -137,10 +142,7 @@ func SaveAfterAssociations(db *gorm.DB) {
 						assignmentColumns = append(assignmentColumns, ref.ForeignKey.DBName)
 					}
 
-					db.AddError(db.Session(&gorm.Session{}).Clauses(clause.OnConflict{
-						Columns:   []clause.Column{{Name: rel.FieldSchema.PrioritizedPrimaryField.DBName}},
-						DoUpdates: clause.AssignmentColumns(assignmentColumns),
-					}).Create(elems.Interface()).Error)
+					saveAssociations(db, rel, elems.Interface(), selectColumns, restricted, assignmentColumns)
 				}
 			case reflect.Struct:
 				if _, zero := rel.Field.ValueOf(db.Statement.ReflectValue); !zero {
@@ -160,10 +162,7 @@ func SaveAfterAssociations(db *gorm.DB) {
 						assignmentColumns = append(assignmentColumns, ref.ForeignKey.DBName)
 					}
 
-					db.AddError(db.Session(&gorm.Session{}).Clauses(clause.OnConflict{
-						Columns:   []clause.Column{{Name: rel.FieldSchema.PrioritizedPrimaryField.DBName}},
-						DoUpdates: clause.AssignmentColumns(assignmentColumns),
-					}).Create(f.Interface()).Error)
+					saveAssociations(db, rel, f.Interface(), selectColumns, restricted, assignmentColumns)
 				}
 			}
 		}
@@ -179,7 +178,7 @@ func SaveAfterAssociations(db *gorm.DB) {
 			if !isPtr {
 				fieldType = reflect.PtrTo(fieldType)
 			}
-			elems := reflect.MakeSlice(reflect.SliceOf(fieldType), 0, 0)
+			elems := reflect.MakeSlice(reflect.SliceOf(fieldType), 0, 10)
 			appendToElems := func(v reflect.Value) {
 				if _, zero := rel.Field.ValueOf(v); !zero {
 					f := reflect.Indirect(rel.Field.ReflectValueOf(v))
@@ -207,7 +206,10 @@ func SaveAfterAssociations(db *gorm.DB) {
 			switch db.Statement.ReflectValue.Kind() {
 			case reflect.Slice, reflect.Array:
 				for i := 0; i < db.Statement.ReflectValue.Len(); i++ {
-					appendToElems(db.Statement.ReflectValue.Index(i))
+					obj := db.Statement.ReflectValue.Index(i)
+					if reflect.Indirect(obj).Kind() == reflect.Struct {
+						appendToElems(obj)
+					}
 				}
 			case reflect.Struct:
 				appendToElems(db.Statement.ReflectValue)
@@ -219,10 +221,7 @@ func SaveAfterAssociations(db *gorm.DB) {
 					assignmentColumns = append(assignmentColumns, ref.ForeignKey.DBName)
 				}
 
-				db.AddError(db.Session(&gorm.Session{}).Clauses(clause.OnConflict{
-					Columns:   []clause.Column{{Name: rel.FieldSchema.PrioritizedPrimaryField.DBName}},
-					DoUpdates: clause.AssignmentColumns(assignmentColumns),
-				}).Create(elems.Interface()).Error)
+				saveAssociations(db, rel, elems.Interface(), selectColumns, restricted, assignmentColumns)
 			}
 		}
 
@@ -237,8 +236,8 @@ func SaveAfterAssociations(db *gorm.DB) {
 			if !isPtr {
 				fieldType = reflect.PtrTo(fieldType)
 			}
-			elems := reflect.MakeSlice(reflect.SliceOf(fieldType), 0, 0)
-			joins := reflect.MakeSlice(reflect.SliceOf(reflect.PtrTo(rel.JoinTable.ModelType)), 0, 0)
+			elems := reflect.MakeSlice(reflect.SliceOf(fieldType), 0, 10)
+			joins := reflect.MakeSlice(reflect.SliceOf(reflect.PtrTo(rel.JoinTable.ModelType)), 0, 10)
 			objs := []reflect.Value{}
 
 			appendToJoins := func(obj reflect.Value, elem reflect.Value) {
@@ -277,14 +276,19 @@ func SaveAfterAssociations(db *gorm.DB) {
 			switch db.Statement.ReflectValue.Kind() {
 			case reflect.Slice, reflect.Array:
 				for i := 0; i < db.Statement.ReflectValue.Len(); i++ {
-					appendToElems(db.Statement.ReflectValue.Index(i))
+					obj := db.Statement.ReflectValue.Index(i)
+					if reflect.Indirect(obj).Kind() == reflect.Struct {
+						appendToElems(obj)
+					}
 				}
 			case reflect.Struct:
 				appendToElems(db.Statement.ReflectValue)
 			}
 
 			if elems.Len() > 0 {
-				db.AddError(db.Session(&gorm.Session{}).Clauses(clause.OnConflict{DoNothing: true}).Create(elems.Interface()).Error)
+				if v, ok := selectColumns[rel.Name+".*"]; !ok || v {
+					saveAssociations(db, rel, elems.Interface(), selectColumns, restricted, nil)
+				}
 
 				for i := 0; i < elems.Len(); i++ {
 					appendToJoins(objs[i], elems.Index(i))
@@ -292,8 +296,85 @@ func SaveAfterAssociations(db *gorm.DB) {
 			}
 
 			if joins.Len() > 0 {
-				db.AddError(db.Session(&gorm.Session{}).Clauses(clause.OnConflict{DoNothing: true}).Create(joins.Interface()).Error)
+				db.AddError(db.Session(&gorm.Session{NewDB: true}).Clauses(clause.OnConflict{DoNothing: true}).Session(&gorm.Session{
+					SkipHooks:                db.Statement.SkipHooks,
+					DisableNestedTransaction: true,
+				}).Create(joins.Interface()).Error)
 			}
 		}
 	}
+}
+
+func onConflictOption(stmt *gorm.Statement, s *schema.Schema, selectColumns map[string]bool, restricted bool, defaultUpdatingColumns []string) clause.OnConflict {
+	if stmt.DB.FullSaveAssociations {
+		defaultUpdatingColumns = make([]string, 0, len(s.DBNames))
+		for _, dbName := range s.DBNames {
+			if v, ok := selectColumns[dbName]; (ok && !v) || (!ok && restricted) {
+				continue
+			}
+
+			if !s.LookUpField(dbName).PrimaryKey {
+				defaultUpdatingColumns = append(defaultUpdatingColumns, dbName)
+			}
+		}
+	}
+
+	if len(defaultUpdatingColumns) > 0 {
+		var columns []clause.Column
+		for _, dbName := range s.PrimaryFieldDBNames {
+			columns = append(columns, clause.Column{Name: dbName})
+		}
+
+		return clause.OnConflict{
+			Columns:   columns,
+			DoUpdates: clause.AssignmentColumns(defaultUpdatingColumns),
+		}
+	}
+
+	return clause.OnConflict{DoNothing: true}
+}
+
+func saveAssociations(db *gorm.DB, rel *schema.Relationship, values interface{}, selectColumns map[string]bool, restricted bool, defaultUpdatingColumns []string) error {
+	var (
+		selects, omits []string
+		onConflict     = onConflictOption(db.Statement, rel.FieldSchema, selectColumns, restricted, defaultUpdatingColumns)
+		refName        = rel.Name + "."
+	)
+
+	for name, ok := range selectColumns {
+		columnName := ""
+		if strings.HasPrefix(name, refName) {
+			columnName = strings.TrimPrefix(name, refName)
+		} else if strings.HasPrefix(name, clause.Associations) {
+			columnName = name
+		}
+
+		if columnName != "" {
+			if ok {
+				selects = append(selects, columnName)
+			} else {
+				omits = append(omits, columnName)
+			}
+		}
+	}
+
+	tx := db.Session(&gorm.Session{NewDB: true}).Clauses(onConflict).Session(&gorm.Session{
+		SkipHooks:                db.Statement.SkipHooks,
+		DisableNestedTransaction: true,
+	})
+
+	db.Statement.Settings.Range(func(k, v interface{}) bool {
+		tx.Statement.Settings.Store(k, v)
+		return true
+	})
+
+	if len(selects) > 0 {
+		tx = tx.Select(selects)
+	}
+
+	if len(omits) > 0 {
+		tx = tx.Omit(omits...)
+	}
+
+	return db.AddError(tx.Create(values).Error)
 }

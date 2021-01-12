@@ -55,6 +55,58 @@ func TestBelongsToOverrideReferences(t *testing.T) {
 	})
 }
 
+func TestBelongsToWithOnlyReferences(t *testing.T) {
+	type Profile struct {
+		gorm.Model
+		Refer string
+		Name  string
+	}
+
+	type User struct {
+		gorm.Model
+		Profile      Profile `gorm:"References:Refer"`
+		ProfileRefer int
+	}
+
+	checkStructRelation(t, &User{}, Relation{
+		Name: "Profile", Type: schema.BelongsTo, Schema: "User", FieldSchema: "Profile",
+		References: []Reference{{"Refer", "Profile", "ProfileRefer", "User", "", false}},
+	})
+}
+
+func TestBelongsToWithOnlyReferences2(t *testing.T) {
+	type Profile struct {
+		gorm.Model
+		Refer string
+		Name  string
+	}
+
+	type User struct {
+		gorm.Model
+		Profile   Profile `gorm:"References:Refer"`
+		ProfileID int
+	}
+
+	checkStructRelation(t, &User{}, Relation{
+		Name: "Profile", Type: schema.BelongsTo, Schema: "User", FieldSchema: "Profile",
+		References: []Reference{{"Refer", "Profile", "ProfileID", "User", "", false}},
+	})
+}
+
+func TestSelfReferentialBelongsToOverrideReferences(t *testing.T) {
+	type User struct {
+		ID        int32 `gorm:"primaryKey"`
+		Name      string
+		CreatedBy *int32
+		Creator   *User `gorm:"foreignKey:CreatedBy;references:ID"`
+	}
+
+	checkStructRelation(t, &User{}, Relation{
+		Name: "Creator", Type: schema.BelongsTo, Schema: "User", FieldSchema: "User",
+		References: []Reference{{"ID", "User", "CreatedBy", "User", "", false}},
+	})
+}
+
 func TestHasOneOverrideForeignKey(t *testing.T) {
 	type Profile struct {
 		gorm.Model
@@ -84,6 +136,44 @@ func TestHasOneOverrideReferences(t *testing.T) {
 		gorm.Model
 		Refer   string
 		Profile Profile `gorm:"ForeignKey:UserID;References:Refer"`
+	}
+
+	checkStructRelation(t, &User{}, Relation{
+		Name: "Profile", Type: schema.HasOne, Schema: "User", FieldSchema: "Profile",
+		References: []Reference{{"Refer", "User", "UserID", "Profile", "", true}},
+	})
+}
+
+func TestHasOneWithOnlyReferences(t *testing.T) {
+	type Profile struct {
+		gorm.Model
+		Name      string
+		UserRefer uint
+	}
+
+	type User struct {
+		gorm.Model
+		Refer   string
+		Profile Profile `gorm:"References:Refer"`
+	}
+
+	checkStructRelation(t, &User{}, Relation{
+		Name: "Profile", Type: schema.HasOne, Schema: "User", FieldSchema: "Profile",
+		References: []Reference{{"Refer", "User", "UserRefer", "Profile", "", true}},
+	})
+}
+
+func TestHasOneWithOnlyReferences2(t *testing.T) {
+	type Profile struct {
+		gorm.Model
+		Name   string
+		UserID uint
+	}
+
+	type User struct {
+		gorm.Model
+		Refer   string
+		Profile Profile `gorm:"References:Refer"`
 	}
 
 	checkStructRelation(t, &User{}, Relation{
@@ -192,16 +282,39 @@ func TestMany2ManyOverrideJoinForeignKey(t *testing.T) {
 
 	type User struct {
 		gorm.Model
-		Profiles []Profile `gorm:"many2many:user_profiles;JoinForeignKey:UserReferID;JoinReferences:ProfileRefer"`
+		Profiles []Profile `gorm:"many2many:user_profile;JoinForeignKey:UserReferID;JoinReferences:ProfileRefer"`
 		Refer    uint
 	}
 
 	checkStructRelation(t, &User{}, Relation{
 		Name: "Profiles", Type: schema.Many2Many, Schema: "User", FieldSchema: "Profile",
-		JoinTable: JoinTable{Name: "user_profiles", Table: "user_profiles"},
+		JoinTable: JoinTable{Name: "user_profile", Table: "user_profile"},
 		References: []Reference{
-			{"ID", "User", "UserReferID", "user_profiles", "", true},
-			{"ID", "Profile", "ProfileRefer", "user_profiles", "", false},
+			{"ID", "User", "UserReferID", "user_profile", "", true},
+			{"ID", "Profile", "ProfileRefer", "user_profile", "", false},
+		},
+	})
+}
+
+func TestBuildReadonlyMany2ManyRelation(t *testing.T) {
+	type Profile struct {
+		gorm.Model
+		Name      string
+		UserRefer uint
+	}
+
+	type User struct {
+		gorm.Model
+		Profiles []Profile `gorm:"->;many2many:user_profile;JoinForeignKey:UserReferID;JoinReferences:ProfileRefer"`
+		Refer    uint
+	}
+
+	checkStructRelation(t, &User{}, Relation{
+		Name: "Profiles", Type: schema.Many2Many, Schema: "User", FieldSchema: "Profile",
+		JoinTable: JoinTable{Name: "user_profile", Table: "user_profile"},
+		References: []Reference{
+			{"ID", "User", "UserReferID", "user_profile", "", true},
+			{"ID", "Profile", "ProfileRefer", "user_profile", "", false},
 		},
 	})
 }
@@ -249,6 +362,37 @@ func TestMany2ManyWithMultiPrimaryKeys(t *testing.T) {
 				{"ID", "Blog", "BlogID", "locale_blog_tags", "", true},
 				{"Locale", "Blog", "BlogLocale", "locale_blog_tags", "", true},
 				{"ID", "Tag", "TagID", "locale_blog_tags", "", false},
+			},
+		},
+	)
+}
+
+func TestMultipleMany2Many(t *testing.T) {
+	type Thing struct {
+		ID int
+	}
+
+	type Person struct {
+		ID       int
+		Likes    []Thing `gorm:"many2many:likes"`
+		Dislikes []Thing `gorm:"many2many:dislikes"`
+	}
+
+	checkStructRelation(t, &Person{},
+		Relation{
+			Name: "Likes", Type: schema.Many2Many, Schema: "Person", FieldSchema: "Thing",
+			JoinTable: JoinTable{Name: "likes", Table: "likes"},
+			References: []Reference{
+				{"ID", "Person", "PersonID", "likes", "", true},
+				{"ID", "Thing", "ThingID", "likes", "", false},
+			},
+		},
+		Relation{
+			Name: "Dislikes", Type: schema.Many2Many, Schema: "Person", FieldSchema: "Thing",
+			JoinTable: JoinTable{Name: "dislikes", Table: "dislikes"},
+			References: []Reference{
+				{"ID", "Person", "PersonID", "dislikes", "", true},
+				{"ID", "Thing", "ThingID", "dislikes", "", false},
 			},
 		},
 	)

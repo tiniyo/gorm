@@ -354,10 +354,25 @@ func TestSetColumn(t *testing.T) {
 
 	AssertEqual(t, result, product)
 
-	// Code changed, price not selected, price should not change
-	DB.Model(&product).Select("code").Updates(map[string]interface{}{"name": "L1214"})
+	// Select to change Code, but nothing updated, price should not change
+	DB.Model(&product).Select("code").Updates(Product3{Name: "L1214", Code: "L1213"})
 
-	if product.Price != 220 || product.Code != "L1213" {
+	if product.Price != 220 || product.Code != "L1213" || product.Name != "Product New3" {
+		t.Errorf("invalid data after update, got %+v", product)
+	}
+
+	DB.Model(&product).Updates(Product3{Code: "L1214"})
+	if product.Price != 270 || product.Code != "L1214" {
+		t.Errorf("invalid data after update, got %+v", product)
+	}
+
+	DB.Model(&product).UpdateColumns(Product3{Code: "L1215"})
+	if product.Price != 270 || product.Code != "L1215" {
+		t.Errorf("invalid data after update, got %+v", product)
+	}
+
+	DB.Model(&product).Session(&gorm.Session{SkipHooks: true}).Updates(Product3{Code: "L1216"})
+	if product.Price != 270 || product.Code != "L1216" {
 		t.Errorf("invalid data after update, got %+v", product)
 	}
 
@@ -365,6 +380,13 @@ func TestSetColumn(t *testing.T) {
 	DB.First(&result2, product.ID)
 
 	AssertEqual(t, result2, product)
+
+	product2 := Product3{Name: "Product", Price: 0}
+	DB.Session(&gorm.Session{SkipHooks: true}).Create(&product2)
+
+	if product2.Price != 0 {
+		t.Errorf("invalid price after create without hooks, got %+v", product2)
+	}
 }
 
 func TestHooksForSlice(t *testing.T) {

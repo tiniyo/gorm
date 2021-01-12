@@ -2,6 +2,7 @@ package tests_test
 
 import (
 	"errors"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -147,13 +148,17 @@ func TestUpdates(t *testing.T) {
 	CheckUser(t, user2, *users[1])
 
 	// update with struct
+	time.Sleep(1 * time.Second)
 	DB.Table("users").Where("name in ?", []string{users[1].Name}).Updates(User{Name: "updates_02_newname"})
 
 	var user3 User
 	if err := DB.First(&user3, "name = ?", "updates_02_newname").Error; err != nil {
 		t.Errorf("User2's name should be updated")
 	}
-	AssertEqual(t, user2.UpdatedAt, user3.UpdatedAt)
+
+	if user2.UpdatedAt.Format(time.RFC1123Z) == user3.UpdatedAt.Format(time.RFC1123Z) {
+		t.Errorf("User's updated at should be changed, old %v, new %v", user2.UpdatedAt.Format(time.RFC1123Z), user3.UpdatedAt.Format(time.RFC1123Z))
+	}
 
 	// update with gorm exprs
 	if err := DB.Model(&user3).Updates(map[string]interface{}{"age": gorm.Expr("age + ?", 100)}).Error; err != nil {
@@ -221,6 +226,10 @@ func TestUpdateColumn(t *testing.T) {
 func TestBlockGlobalUpdate(t *testing.T) {
 	if err := DB.Model(&User{}).Update("name", "jinzhu").Error; err == nil || !errors.Is(err, gorm.ErrMissingWhereClause) {
 		t.Errorf("should returns missing WHERE clause while updating error, got err %v", err)
+	}
+
+	if err := DB.Session(&gorm.Session{AllowGlobalUpdate: true}).Model(&User{}).Update("name", "jinzhu").Error; err != nil {
+		t.Errorf("should returns no error while enable global update, but got err %v", err)
 	}
 }
 
@@ -332,6 +341,15 @@ func TestSelectWithUpdateWithMap(t *testing.T) {
 	})
 
 	AssertObjEqual(t, result2, result, "Name", "Account", "Toys", "Manager", "ManagerID", "Languages")
+}
+
+func TestWithUpdateWithInvalidMap(t *testing.T) {
+	user := *GetUser("update_with_invalid_map", Config{})
+	DB.Create(&user)
+
+	if err := DB.Model(&user).Updates(map[string]string{"name": "jinzhu"}).Error; !errors.Is(err, gorm.ErrInvalidData) {
+		t.Errorf("should returns error for unsupported updating data")
+	}
 }
 
 func TestOmitWithUpdate(t *testing.T) {
@@ -452,7 +470,9 @@ func TestSelectWithUpdateColumn(t *testing.T) {
 	var result2 User
 	DB.First(&result2, user.ID)
 
-	AssertEqual(t, lastUpdatedAt, result2.UpdatedAt)
+	if lastUpdatedAt.Format(time.RFC3339Nano) == result2.UpdatedAt.Format(time.RFC3339Nano) {
+		t.Errorf("UpdatedAt should be changed")
+	}
 
 	if result2.Name == user.Name || result2.Age != user.Age {
 		t.Errorf("Should only update users with name column")
@@ -543,5 +563,125 @@ func TestUpdatesTableWithIgnoredValues(t *testing.T) {
 
 	if result.IgnoredField != 0 {
 		t.Errorf("element's ignored field should not be updated")
+	}
+}
+
+func TestUpdateFromSubQuery(t *testing.T) {
+	user := *GetUser("update_from_sub_query", Config{Company: true})
+	if err := DB.Create(&user).Error; err != nil {
+		t.Errorf("failed to create user, got error: %v", err)
+	}
+
+	if err := DB.Model(&user).Update("name", DB.Model(&Company{}).Select("name").Where("companies.id = users.company_id")).Error; err != nil {
+		t.Errorf("failed to update with sub query, got error %v", err)
+	}
+
+	var result User
+	DB.First(&result, user.ID)
+
+	if result.Name != user.Company.Name {
+		t.Errorf("name should be %v, but got %v", user.Company.Name, result.Name)
+	}
+
+	DB.Model(&user.Company).Update("Name", "new company name")
+	if err := DB.Table("users").Where("1 = 1").Update("name", DB.Table("companies").Select("name").Where("companies.id = users.company_id")).Error; err != nil {
+		t.Errorf("failed to update with sub query, got error %v", err)
+	}
+
+	DB.First(&result, user.ID)
+	if result.Name != "new company name" {
+		t.Errorf("name should be %v, but got %v", user.Company.Name, result.Name)
+	}
+}
+
+func TestSave(t *testing.T) {
+	user := *GetUser("save", Config{})
+	DB.Create(&user)
+
+	if err := DB.First(&User{}, "name = ?", "save").Error; err != nil {
+		t.Fatalf("failed to find created user")
+	}
+
+	user.Name = "save2"
+	DB.Save(&user)
+
+	var result User
+	if err := DB.First(&result, "name = ?", "save2").Error; err != nil || result.ID != user.ID {
+		t.Fatalf("failed to find updated user")
+	}
+
+	user2 := *GetUser("save2", Config{})
+	DB.Create(&user2)
+
+	time.Sleep(time.Second)
+	user1UpdatedAt := result.UpdatedAt
+	user2UpdatedAt := user2.UpdatedAt
+	var users = []*User{&result, &user2}
+	DB.Save(&users)
+
+	if user1UpdatedAt.Format(time.RFC1123Z) == result.UpdatedAt.Format(time.RFC1123Z) {
+		t.Fatalf("user's updated at should be changed, expects: %+v, got: %+v", user1UpdatedAt, result.UpdatedAt)
+	}
+
+	if user2UpdatedAt.Format(time.RFC1123Z) == user2.UpdatedAt.Format(time.RFC1123Z) {
+		t.Fatalf("user's updated at should be changed, expects: %+v, got: %+v", user2UpdatedAt, user2.UpdatedAt)
+	}
+
+	DB.First(&result)
+	if user1UpdatedAt.Format(time.RFC1123Z) == result.UpdatedAt.Format(time.RFC1123Z) {
+		t.Fatalf("user's updated at should be changed after reload, expects: %+v, got: %+v", user1UpdatedAt, result.UpdatedAt)
+	}
+
+	DB.First(&user2)
+	if user2UpdatedAt.Format(time.RFC1123Z) == user2.UpdatedAt.Format(time.RFC1123Z) {
+		t.Fatalf("user2's updated at should be changed after reload, expects: %+v, got: %+v", user2UpdatedAt, user2.UpdatedAt)
+	}
+
+	dryDB := DB.Session(&gorm.Session{DryRun: true})
+	stmt := dryDB.Save(&user).Statement
+	if !regexp.MustCompile("WHERE .id. = [^ ]+$").MatchString(stmt.SQL.String()) {
+		t.Fatalf("invalid updating SQL, got %v", stmt.SQL.String())
+	}
+}
+
+func TestSaveWithPrimaryValue(t *testing.T) {
+	lang := Language{Code: "save", Name: "save"}
+	if result := DB.Save(&lang); result.RowsAffected != 1 {
+		t.Errorf("should create language, rows affected: %v", result.RowsAffected)
+	}
+
+	var result Language
+	DB.First(&result, "code = ?", "save")
+	AssertEqual(t, result, lang)
+
+	lang.Name = "save name2"
+	if result := DB.Save(&lang); result.RowsAffected != 1 {
+		t.Errorf("should update language")
+	}
+
+	var result2 Language
+	DB.First(&result2, "code = ?", "save")
+	AssertEqual(t, result2, lang)
+
+	DB.Table("langs").Migrator().DropTable(&Language{})
+	DB.Table("langs").AutoMigrate(&Language{})
+
+	if err := DB.Table("langs").Save(&lang).Error; err != nil {
+		t.Errorf("no error should happen when creating data, but got %v", err)
+	}
+
+	var result3 Language
+	if err := DB.Table("langs").First(&result3, "code = ?", lang.Code).Error; err != nil || result3.Name != lang.Name {
+		t.Errorf("failed to find created record, got error: %v, result: %+v", err, result3)
+	}
+
+	lang.Name += "name2"
+	if err := DB.Table("langs").Save(&lang).Error; err != nil {
+		t.Errorf("no error should happen when creating data, but got %v", err)
+	}
+
+	var result4 Language
+	if err := DB.Table("langs").First(&result4, "code = ?", lang.Code).Error; err != nil || result4.Name != lang.Name {
+		t.Errorf("failed to find created record, got error: %v, result: %+v", err, result4)
 	}
 }

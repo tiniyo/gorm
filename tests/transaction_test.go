@@ -1,6 +1,7 @@
 package tests_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -54,6 +55,25 @@ func TestTransaction(t *testing.T) {
 
 	if err := DB.First(&User{}, "name = ?", "transaction-2").Error; err != nil {
 		t.Fatalf("Should be able to find committed record, but got %v", err)
+	}
+}
+
+func TestCancelTransaction(t *testing.T) {
+	ctx := context.Background()
+	ctx, cancelFunc := context.WithCancel(ctx)
+	cancelFunc()
+
+	user := *GetUser("cancel_transaction", Config{})
+	DB.Create(&user)
+
+	err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var result User
+		tx.First(&result, user.ID)
+		return nil
+	})
+
+	if err == nil {
+		t.Fatalf("Transaction should get error when using cancelled context")
 	}
 }
 
@@ -260,5 +280,89 @@ func TestNestedTransactionWithBlock(t *testing.T) {
 
 	if err := DB.First(&User{}, "name = ?", user2.Name).Error; err != nil {
 		t.Fatalf("Should find saved record")
+	}
+}
+
+func TestDisabledNestedTransaction(t *testing.T) {
+	var (
+		user  = *GetUser("transaction-nested", Config{})
+		user1 = *GetUser("transaction-nested-1", Config{})
+		user2 = *GetUser("transaction-nested-2", Config{})
+	)
+
+	if err := DB.Session(&gorm.Session{DisableNestedTransaction: true}).Transaction(func(tx *gorm.DB) error {
+		tx.Create(&user)
+
+		if err := tx.First(&User{}, "name = ?", user.Name).Error; err != nil {
+			t.Fatalf("Should find saved record")
+		}
+
+		if err := tx.Transaction(func(tx1 *gorm.DB) error {
+			tx1.Create(&user1)
+
+			if err := tx1.First(&User{}, "name = ?", user1.Name).Error; err != nil {
+				t.Fatalf("Should find saved record")
+			}
+
+			return errors.New("rollback")
+		}); err == nil {
+			t.Fatalf("nested transaction should returns error")
+		}
+
+		if err := tx.First(&User{}, "name = ?", user1.Name).Error; err != nil {
+			t.Fatalf("Should not rollback record if disabled nested transaction support")
+		}
+
+		if err := tx.Transaction(func(tx2 *gorm.DB) error {
+			tx2.Create(&user2)
+
+			if err := tx2.First(&User{}, "name = ?", user2.Name).Error; err != nil {
+				t.Fatalf("Should find saved record")
+			}
+
+			return nil
+		}); err != nil {
+			t.Fatalf("nested transaction returns error: %v", err)
+		}
+
+		if err := tx.First(&User{}, "name = ?", user2.Name).Error; err != nil {
+			t.Fatalf("Should find saved record")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("no error should return, but got %v", err)
+	}
+
+	if err := DB.First(&User{}, "name = ?", user.Name).Error; err != nil {
+		t.Fatalf("Should find saved record")
+	}
+
+	if err := DB.First(&User{}, "name = ?", user1.Name).Error; err != nil {
+		t.Fatalf("Should not rollback record if disabled nested transaction support")
+	}
+
+	if err := DB.First(&User{}, "name = ?", user2.Name).Error; err != nil {
+		t.Fatalf("Should find saved record")
+	}
+}
+
+func TestTransactionOnClosedConn(t *testing.T) {
+	DB, err := OpenTestConnection()
+	if err != nil {
+		t.Fatalf("failed to connect database, got error %v", err)
+	}
+	rawDB, _ := DB.DB()
+	rawDB.Close()
+
+	if err := DB.Transaction(func(tx *gorm.DB) error {
+		return nil
+	}); err == nil {
+		t.Errorf("should returns error when commit with closed conn, got error %v", err)
+	}
+
+	if err := DB.Session(&gorm.Session{PrepareStmt: true}).Transaction(func(tx *gorm.DB) error {
+		return nil
+	}); err == nil {
+		t.Errorf("should returns error when commit with closed conn, got error %v", err)
 	}
 }

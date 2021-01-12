@@ -6,44 +6,55 @@ import (
 	"sync"
 )
 
+type Stmt struct {
+	*sql.Stmt
+	Transaction bool
+}
+
 type PreparedStmtDB struct {
-	Stmts map[string]*sql.Stmt
-	mux   sync.RWMutex
+	Stmts       map[string]Stmt
+	PreparedSQL []string
+	Mux         *sync.RWMutex
 	ConnPool
 }
 
 func (db *PreparedStmtDB) Close() {
-	db.mux.Lock()
-	for k, stmt := range db.Stmts {
-		delete(db.Stmts, k)
+	db.Mux.Lock()
+	for _, query := range db.PreparedSQL {
+		if stmt, ok := db.Stmts[query]; ok {
+			delete(db.Stmts, query)
+			stmt.Close()
+		}
+	}
+
+	db.Mux.Unlock()
+}
+
+func (db *PreparedStmtDB) prepare(ctx context.Context, conn ConnPool, isTransaction bool, query string) (Stmt, error) {
+	db.Mux.RLock()
+	if stmt, ok := db.Stmts[query]; ok && (!stmt.Transaction || isTransaction) {
+		db.Mux.RUnlock()
+		return stmt, nil
+	}
+	db.Mux.RUnlock()
+
+	db.Mux.Lock()
+	// double check
+	if stmt, ok := db.Stmts[query]; ok && (!stmt.Transaction || isTransaction) {
+		db.Mux.Unlock()
+		return stmt, nil
+	} else if ok {
 		stmt.Close()
 	}
 
-	db.mux.Unlock()
-}
-
-func (db *PreparedStmtDB) prepare(query string) (*sql.Stmt, error) {
-	db.mux.RLock()
-	if stmt, ok := db.Stmts[query]; ok {
-		db.mux.RUnlock()
-		return stmt, nil
-	}
-	db.mux.RUnlock()
-
-	db.mux.Lock()
-	// double check
-	if stmt, ok := db.Stmts[query]; ok {
-		db.mux.Unlock()
-		return stmt, nil
-	}
-
-	stmt, err := db.ConnPool.PrepareContext(context.Background(), query)
+	stmt, err := conn.PrepareContext(ctx, query)
 	if err == nil {
-		db.Stmts[query] = stmt
+		db.Stmts[query] = Stmt{Stmt: stmt, Transaction: isTransaction}
+		db.PreparedSQL = append(db.PreparedSQL, query)
 	}
-	db.mux.Unlock()
+	db.Mux.Unlock()
 
-	return stmt, err
+	return db.Stmts[query], err
 }
 
 func (db *PreparedStmtDB) BeginTx(ctx context.Context, opt *sql.TxOptions) (ConnPool, error) {
@@ -55,35 +66,35 @@ func (db *PreparedStmtDB) BeginTx(ctx context.Context, opt *sql.TxOptions) (Conn
 }
 
 func (db *PreparedStmtDB) ExecContext(ctx context.Context, query string, args ...interface{}) (result sql.Result, err error) {
-	stmt, err := db.prepare(query)
+	stmt, err := db.prepare(ctx, db.ConnPool, false, query)
 	if err == nil {
 		result, err = stmt.ExecContext(ctx, args...)
 		if err != nil {
-			db.mux.Lock()
+			db.Mux.Lock()
 			stmt.Close()
 			delete(db.Stmts, query)
-			db.mux.Unlock()
+			db.Mux.Unlock()
 		}
 	}
 	return result, err
 }
 
 func (db *PreparedStmtDB) QueryContext(ctx context.Context, query string, args ...interface{}) (rows *sql.Rows, err error) {
-	stmt, err := db.prepare(query)
+	stmt, err := db.prepare(ctx, db.ConnPool, false, query)
 	if err == nil {
 		rows, err = stmt.QueryContext(ctx, args...)
 		if err != nil {
-			db.mux.Lock()
+			db.Mux.Lock()
 			stmt.Close()
 			delete(db.Stmts, query)
-			db.mux.Unlock()
+			db.Mux.Unlock()
 		}
 	}
 	return rows, err
 }
 
 func (db *PreparedStmtDB) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
-	stmt, err := db.prepare(query)
+	stmt, err := db.prepare(ctx, db.ConnPool, false, query)
 	if err == nil {
 		return stmt.QueryRowContext(ctx, args...)
 	}
@@ -95,38 +106,52 @@ type PreparedStmtTX struct {
 	PreparedStmtDB *PreparedStmtDB
 }
 
+func (tx *PreparedStmtTX) Commit() error {
+	if tx.Tx != nil {
+		return tx.Tx.Commit()
+	}
+	return ErrInvalidTransaction
+}
+
+func (tx *PreparedStmtTX) Rollback() error {
+	if tx.Tx != nil {
+		return tx.Tx.Rollback()
+	}
+	return ErrInvalidTransaction
+}
+
 func (tx *PreparedStmtTX) ExecContext(ctx context.Context, query string, args ...interface{}) (result sql.Result, err error) {
-	stmt, err := tx.PreparedStmtDB.prepare(query)
+	stmt, err := tx.PreparedStmtDB.prepare(ctx, tx.Tx, true, query)
 	if err == nil {
-		result, err = tx.Tx.Stmt(stmt).ExecContext(ctx, args...)
+		result, err = tx.Tx.StmtContext(ctx, stmt.Stmt).ExecContext(ctx, args...)
 		if err != nil {
-			tx.PreparedStmtDB.mux.Lock()
+			tx.PreparedStmtDB.Mux.Lock()
 			stmt.Close()
 			delete(tx.PreparedStmtDB.Stmts, query)
-			tx.PreparedStmtDB.mux.Unlock()
+			tx.PreparedStmtDB.Mux.Unlock()
 		}
 	}
 	return result, err
 }
 
 func (tx *PreparedStmtTX) QueryContext(ctx context.Context, query string, args ...interface{}) (rows *sql.Rows, err error) {
-	stmt, err := tx.PreparedStmtDB.prepare(query)
+	stmt, err := tx.PreparedStmtDB.prepare(ctx, tx.Tx, true, query)
 	if err == nil {
-		rows, err = tx.Tx.Stmt(stmt).QueryContext(ctx, args...)
+		rows, err = tx.Tx.Stmt(stmt.Stmt).QueryContext(ctx, args...)
 		if err != nil {
-			tx.PreparedStmtDB.mux.Lock()
+			tx.PreparedStmtDB.Mux.Lock()
 			stmt.Close()
 			delete(tx.PreparedStmtDB.Stmts, query)
-			tx.PreparedStmtDB.mux.Unlock()
+			tx.PreparedStmtDB.Mux.Unlock()
 		}
 	}
 	return rows, err
 }
 
 func (tx *PreparedStmtTX) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
-	stmt, err := tx.PreparedStmtDB.prepare(query)
+	stmt, err := tx.PreparedStmtDB.prepare(ctx, tx.Tx, true, query)
 	if err == nil {
-		return tx.Tx.Stmt(stmt).QueryRowContext(ctx, args...)
+		return tx.Tx.StmtContext(ctx, stmt.Stmt).QueryRowContext(ctx, args...)
 	}
 	return &sql.Row{}
 }

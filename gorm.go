@@ -20,6 +20,8 @@ type Config struct {
 	SkipDefaultTransaction bool
 	// NamingStrategy tables, columns naming strategy
 	NamingStrategy schema.Namer
+	// FullSaveAssociations full save associations
+	FullSaveAssociations bool
 	// Logger
 	Logger logger.Interface
 	// NowFunc the function to be used when creating a new timestamp
@@ -32,6 +34,14 @@ type Config struct {
 	DisableAutomaticPing bool
 	// DisableForeignKeyConstraintWhenMigrating
 	DisableForeignKeyConstraintWhenMigrating bool
+	// DisableNestedTransaction disable nested transaction
+	DisableNestedTransaction bool
+	// AllowGlobalUpdate allow global update
+	AllowGlobalUpdate bool
+	// QueryFields executes the SQL query with all fields of the table
+	QueryFields bool
+	// CreateBatchSize default create batch size
+	CreateBatchSize int
 
 	// ClauseBuilders clause builder
 	ClauseBuilders map[string]clause.ClauseBuilder
@@ -57,12 +67,19 @@ type DB struct {
 
 // Session session config when create session with Session() method
 type Session struct {
-	DryRun         bool
-	PrepareStmt    bool
-	WithConditions bool
-	Context        context.Context
-	Logger         logger.Interface
-	NowFunc        func() time.Time
+	DryRun                   bool
+	PrepareStmt              bool
+	NewDB                    bool
+	SkipHooks                bool
+	SkipDefaultTransaction   bool
+	DisableNestedTransaction bool
+	AllowGlobalUpdate        bool
+	FullSaveAssociations     bool
+	QueryFields              bool
+	Context                  context.Context
+	Logger                   logger.Interface
+	NowFunc                  func() time.Time
+	CreateBatchSize          int
 }
 
 // Open initialize db session based on dialector
@@ -107,11 +124,16 @@ func Open(dialector Dialector, config *Config) (db *DB, err error) {
 		err = config.Dialector.Initialize(db)
 	}
 
+	preparedStmt := &PreparedStmtDB{
+		ConnPool:    db.ConnPool,
+		Stmts:       map[string]Stmt{},
+		Mux:         &sync.RWMutex{},
+		PreparedSQL: make([]string, 0, 100),
+	}
+	db.cacheStore.Store("preparedStmt", preparedStmt)
+
 	if config.PrepareStmt {
-		db.ConnPool = &PreparedStmtDB{
-			ConnPool: db.ConnPool,
-			Stmts:    map[string]*sql.Stmt{},
-		}
+		db.ConnPool = preparedStmt
 	}
 
 	db.Statement = &Statement{
@@ -141,29 +163,67 @@ func (db *DB) Session(config *Session) *DB {
 		tx       = &DB{
 			Config:    &txConfig,
 			Statement: db.Statement,
+			Error:     db.Error,
 			clone:     1,
 		}
 	)
 
-	if config.Context != nil {
+	if config.CreateBatchSize > 0 {
+		tx.Config.CreateBatchSize = config.CreateBatchSize
+	}
+
+	if config.SkipDefaultTransaction {
+		tx.Config.SkipDefaultTransaction = true
+	}
+
+	if config.AllowGlobalUpdate {
+		txConfig.AllowGlobalUpdate = true
+	}
+
+	if config.FullSaveAssociations {
+		txConfig.FullSaveAssociations = true
+	}
+
+	if config.Context != nil || config.PrepareStmt || config.SkipHooks {
 		tx.Statement = tx.Statement.clone()
 		tx.Statement.DB = tx
+	}
+
+	if config.Context != nil {
 		tx.Statement.Context = config.Context
 	}
 
 	if config.PrepareStmt {
-		tx.Statement.ConnPool = &PreparedStmtDB{
-			ConnPool: db.Config.ConnPool,
-			Stmts:    map[string]*sql.Stmt{},
+		if v, ok := db.cacheStore.Load("preparedStmt"); ok {
+			preparedStmt := v.(*PreparedStmtDB)
+			tx.Statement.ConnPool = &PreparedStmtDB{
+				ConnPool: db.Config.ConnPool,
+				Mux:      preparedStmt.Mux,
+				Stmts:    preparedStmt.Stmts,
+			}
+			txConfig.ConnPool = tx.Statement.ConnPool
+			txConfig.PrepareStmt = true
 		}
 	}
 
-	if config.WithConditions {
+	if config.SkipHooks {
+		tx.Statement.SkipHooks = true
+	}
+
+	if config.DisableNestedTransaction {
+		txConfig.DisableNestedTransaction = true
+	}
+
+	if !config.NewDB {
 		tx.clone = 2
 	}
 
 	if config.DryRun {
 		tx.Config.DryRun = true
+	}
+
+	if config.QueryFields {
+		tx.Config.QueryFields = true
 	}
 
 	if config.Logger != nil {
@@ -179,14 +239,13 @@ func (db *DB) Session(config *Session) *DB {
 
 // WithContext change current instance db's context to ctx
 func (db *DB) WithContext(ctx context.Context) *DB {
-	return db.Session(&Session{WithConditions: true, Context: ctx})
+	return db.Session(&Session{Context: ctx})
 }
 
 // Debug start debug mode
 func (db *DB) Debug() (tx *DB) {
 	return db.Session(&Session{
-		WithConditions: true,
-		Logger:         db.Logger.LogMode(logger.Info),
+		Logger: db.Logger.LogMode(logger.Info),
 	})
 }
 
@@ -255,6 +314,7 @@ func (db *DB) getInstance() *DB {
 				ConnPool: db.Statement.ConnPool,
 				Context:  db.Statement.Context,
 				Clauses:  map[string]clause.Clause{},
+				Vars:     make([]interface{}, 0, 8),
 			}
 		} else {
 			// with clone statement
@@ -295,6 +355,10 @@ func (db *DB) SetupJoinTable(model interface{}, field string, joinTable interfac
 		for _, ref := range relation.References {
 			if f := joinSchema.LookUpField(ref.ForeignKey.DBName); f != nil {
 				f.DataType = ref.ForeignKey.DataType
+				f.GORMDataType = ref.ForeignKey.GORMDataType
+				if f.Size == 0 {
+					f.Size = ref.ForeignKey.Size
+				}
 				ref.ForeignKey = f
 			} else {
 				return fmt.Errorf("missing field %v for join table", ref.ForeignKey.DBName)
@@ -316,15 +380,14 @@ func (db *DB) SetupJoinTable(model interface{}, field string, joinTable interfac
 	return nil
 }
 
-func (db *DB) Use(plugin Plugin) (err error) {
+func (db *DB) Use(plugin Plugin) error {
 	name := plugin.Name()
-	if _, ok := db.Plugins[name]; !ok {
-		if err = plugin.Initialize(db); err == nil {
-			db.Plugins[name] = plugin
-		}
-	} else {
+	if _, ok := db.Plugins[name]; ok {
 		return ErrRegistered
 	}
-
-	return err
+	if err := plugin.Initialize(db); err != nil {
+		return err
+	}
+	db.Plugins[name] = plugin
+	return nil
 }

@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -26,9 +27,48 @@ func TestToDBName(t *testing.T) {
 		"ThisIsActuallyATestSoWeMayBeAbleToUseThisCodeInGormPackageAlsoIdCanBeUsedAtTheEndAsID": "this_is_actually_a_test_so_we_may_be_able_to_use_this_code_in_gorm_package_also_id_can_be_used_at_the_end_as_id",
 	}
 
+	ns := NamingStrategy{}
 	for key, value := range maps {
-		if toDBName(key) != value {
-			t.Errorf("%v toName should equal %v, but got %v", key, value, toDBName(key))
+		if ns.toDBName(key) != value {
+			t.Errorf("%v toName should equal %v, but got %v", key, value, ns.toDBName(key))
 		}
+	}
+}
+
+func TestNamingStrategy(t *testing.T) {
+	var ns = NamingStrategy{
+		TablePrefix:   "public.",
+		SingularTable: true,
+		NameReplacer:  strings.NewReplacer("CID", "Cid"),
+	}
+	idxName := ns.IndexName("public.table", "name")
+
+	if idxName != "idx_public_table_name" {
+		t.Errorf("invalid index name generated, got %v", idxName)
+	}
+
+	chkName := ns.CheckerName("public.table", "name")
+	if chkName != "chk_public_table_name" {
+		t.Errorf("invalid checker name generated, got %v", chkName)
+	}
+
+	joinTable := ns.JoinTableName("user_languages")
+	if joinTable != "public.user_languages" {
+		t.Errorf("invalid join table generated, got %v", joinTable)
+	}
+
+	joinTable2 := ns.JoinTableName("UserLanguage")
+	if joinTable2 != "public.user_language" {
+		t.Errorf("invalid join table generated, got %v", joinTable2)
+	}
+
+	tableName := ns.TableName("Company")
+	if tableName != "public.company" {
+		t.Errorf("invalid table name generated, got %v", tableName)
+	}
+
+	columdName := ns.ColumnName("", "NameCID")
+	if columdName != "name_cid" {
+		t.Errorf("invalid column name generated, got %v", columdName)
 	}
 }

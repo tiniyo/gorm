@@ -1,10 +1,14 @@
 package tests_test
 
 import (
+	"encoding/json"
+	"regexp"
 	"sort"
 	"strconv"
+	"sync"
 	"testing"
 
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	. "gorm.io/gorm/utils/tests"
 )
@@ -30,6 +34,20 @@ func TestPreloadWithAssociations(t *testing.T) {
 	var user2 User
 	DB.Preload(clause.Associations).Find(&user2, "id = ?", user.ID)
 	CheckUser(t, user2, user)
+
+	var user3 = *GetUser("preload_with_associations_new", Config{
+		Account:   true,
+		Pets:      2,
+		Toys:      3,
+		Company:   true,
+		Manager:   true,
+		Team:      4,
+		Languages: 3,
+		Friends:   1,
+	})
+
+	DB.Preload(clause.Associations).Find(&user3, "id = ?", user.ID)
+	CheckUser(t, user3, user)
 }
 
 func TestNestedPreload(t *testing.T) {
@@ -108,6 +126,20 @@ func TestPreloadWithConds(t *testing.T) {
 	}
 
 	CheckUser(t, users2[0], users[0])
+
+	var users3 []User
+	if err := DB.Preload("Account", func(tx *gorm.DB) *gorm.DB {
+		return tx.Table("accounts AS a").Select("a.*")
+	}).Find(&users3, "id IN ?", userIDs).Error; err != nil {
+		t.Errorf("failed to query, got error %v", err)
+	}
+	sort.Slice(users3, func(i, j int) bool {
+		return users2[i].ID < users2[j].ID
+	})
+
+	for i, u := range users3 {
+		CheckUser(t, u, users[i])
+	}
 }
 
 func TestNestedPreloadWithConds(t *testing.T) {
@@ -158,4 +190,44 @@ func TestNestedPreloadWithConds(t *testing.T) {
 
 		CheckPet(t, *users2[2].Pets[2], *users[2].Pets[2])
 	}
+}
+
+func TestPreloadEmptyData(t *testing.T) {
+	var user = *GetUser("user_without_associations", Config{})
+	DB.Create(&user)
+
+	DB.Preload("Team").Preload("Languages").Preload("Friends").First(&user, "name = ?", user.Name)
+
+	if r, err := json.Marshal(&user); err != nil {
+		t.Errorf("failed to marshal users, got error %v", err)
+	} else if !regexp.MustCompile(`"Team":\[\],"Languages":\[\],"Friends":\[\]`).MatchString(string(r)) {
+		t.Errorf("json marshal is not empty slice, got %v", string(r))
+	}
+
+	var results []User
+	DB.Preload("Team").Preload("Languages").Preload("Friends").Find(&results, "name = ?", user.Name)
+
+	if r, err := json.Marshal(&results); err != nil {
+		t.Errorf("failed to marshal users, got error %v", err)
+	} else if !regexp.MustCompile(`"Team":\[\],"Languages":\[\],"Friends":\[\]`).MatchString(string(r)) {
+		t.Errorf("json marshal is not empty slice, got %v", string(r))
+	}
+}
+
+func TestPreloadGoroutine(t *testing.T) {
+	var wg sync.WaitGroup
+
+	wg.Add(10)
+	for i := 0; i < 10; i++ {
+		go func() {
+			defer wg.Done()
+			var user2 []User
+			tx := DB.Where("id = ?", 1).Session(&gorm.Session{})
+
+			if err := tx.Preload("Team").Find(&user2).Error; err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
 }

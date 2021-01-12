@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"gorm.io/gorm"
+	. "gorm.io/gorm/utils/tests"
 )
 
 type Blog struct {
@@ -139,7 +140,7 @@ func TestManyToManyWithCustomizedForeignKeys(t *testing.T) {
 	}
 
 	if name := DB.Dialector.Name(); name == "postgres" {
-		t.Skip("skip postgers due to it only allow unique constraint matching given keys")
+		t.Skip("skip postgres due to it only allow unique constraint matching given keys")
 	}
 
 	DB.Migrator().DropTable(&Blog{}, &Tag{}, "blog_tags", "locale_blog_tags", "shared_blog_tags")
@@ -264,7 +265,7 @@ func TestManyToManyWithCustomizedForeignKeys2(t *testing.T) {
 	}
 
 	if name := DB.Dialector.Name(); name == "postgres" {
-		t.Skip("skip postgers due to it only allow unique constraint matching given keys")
+		t.Skip("skip postgres due to it only allow unique constraint matching given keys")
 	}
 
 	DB.Migrator().DropTable(&Blog{}, &Tag{}, "blog_tags", "locale_blog_tags", "shared_blog_tags")
@@ -409,4 +410,39 @@ func TestManyToManyWithCustomizedForeignKeys2(t *testing.T) {
 	if DB.Model(&blog2).Association("LocaleTags").Count() != 0 {
 		t.Fatalf("EN Blog's tags should be cleared")
 	}
+}
+
+func TestCompositePrimaryKeysAssociations(t *testing.T) {
+	type Label struct {
+		BookID *uint  `gorm:"primarykey"`
+		Name   string `gorm:"primarykey"`
+		Value  string
+	}
+
+	type Book struct {
+		ID     int
+		Name   string
+		Labels []Label
+	}
+
+	DB.Migrator().DropTable(&Label{}, &Book{})
+	if err := DB.AutoMigrate(&Label{}, &Book{}); err != nil {
+		t.Fatalf("failed to migrate")
+	}
+
+	book := Book{
+		Name: "my book",
+		Labels: []Label{
+			{Name: "region", Value: "emea"},
+		},
+	}
+
+	DB.Create(&book)
+
+	var result Book
+	if err := DB.Preload("Labels").First(&result, book.ID).Error; err != nil {
+		t.Fatalf("failed to preload, got error %v", err)
+	}
+
+	AssertEqual(t, book, result)
 }
