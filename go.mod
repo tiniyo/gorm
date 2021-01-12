@@ -1,4 +1,4 @@
-module github.com/tiniyo/gorm
+module gorm.io/gorm
 
 go 1.14
 
